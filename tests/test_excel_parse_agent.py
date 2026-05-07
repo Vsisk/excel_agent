@@ -6,6 +6,7 @@ from openpyxl import Workbook
 
 from agent.excel_agent.excel_parse_handler import handle_excel_parse
 from agent.excel_agent.excel_reader import ExcelReader
+from agent.excel_agent.excel_visualizer import ExcelVisualizer
 from agent.excel_agent.llm_sheet_grouper import LLMSheetGrouper
 from agent.excel_agent.logic_builder import LogicBuilder
 from agent.excel_agent.models import (
@@ -209,6 +210,72 @@ def test_llm_sheet_grouper_falls_back_on_failure():
     assert grouping.groups[0].region_ids == ["region_1"]
     assert "fallback" in grouping.groups[0].reason
     assert grouper.last_fallback_reason == "boom"
+
+
+def test_visualizer_calls_vl_for_low_confidence_region():
+    calls = []
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        calls.append((prompt_template, llm_name, kwargs))
+        return {"target_id": kwargs["target_id"], "summary": "looks like notes", "confidence": 0.8}
+
+    snapshot = RegionSnapshot(
+        "region_1",
+        "sheet_1",
+        CellRange(1, 1, 1, 1),
+        "unclear",
+        ["unclear"],
+        {"logic_area_type": "unknown", "confidence": 0.35},
+        False,
+    )
+
+    visualizer = ExcelVisualizer(llm_generate=fake_generate)
+    result = visualizer.collect_visual_summaries(
+        file_uri="unused.xlsx",
+        sheet_info={
+            "sheet_id": "sheet_1",
+            "sheet_name": "S",
+            "sheet_index": 0,
+            "max_row": 1,
+            "max_col": 1,
+            "merged_cells": [],
+        },
+        region_snapshots=[snapshot],
+    )
+
+    assert result["summaries"][0]["target_id"] == "region_1"
+    assert calls[0][0] == "excel_visual_summary"
+    assert calls[0][1] == "vl"
+
+
+def test_visualizer_skips_high_confidence_region():
+    def fail_generate(*args, **kwargs):
+        raise AssertionError("vl should not be called")
+
+    snapshot = RegionSnapshot(
+        "region_1",
+        "sheet_1",
+        CellRange(1, 2, 1, 2),
+        "clear",
+        ["clear"],
+        {"logic_area_type": "fields", "confidence": 0.82},
+        False,
+    )
+
+    result = ExcelVisualizer(llm_generate=fail_generate).collect_visual_summaries(
+        file_uri="unused.xlsx",
+        sheet_info={
+            "sheet_id": "sheet_1",
+            "sheet_name": "S",
+            "sheet_index": 0,
+            "max_row": 2,
+            "max_col": 2,
+            "merged_cells": [],
+        },
+        region_snapshots=[snapshot],
+    )
+
+    assert result == {"summaries": [], "skipped": []}
 
 
 def test_sheet_profiler_computes_used_range_and_density(tmp_path):
