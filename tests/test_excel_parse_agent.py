@@ -410,6 +410,37 @@ def test_logic_builder_creates_page_and_area():
     assert area["location_list"][0]["raw_excel_text_list"] == region.raw_text
 
 
+def test_logic_builder_creates_named_page_and_grouped_area():
+    sheet_info = {
+        "sheet_id": "sheet_1",
+        "sheet_name": "Charges",
+        "sheet_index": 0,
+        "max_row": 6,
+        "max_col": 3,
+        "merged_cells": [],
+    }
+    region1 = ExcelRegion("sheet_1", CellRange(1, 2, 1, 2), ["A B"])
+    region2 = ExcelRegion("sheet_1", CellRange(5, 6, 1, 3), ["Item Qty Amount"])
+    classifications = {
+        "region_1": {"logic_area_type": "fields", "confidence": 0.82},
+        "region_2": {"logic_area_type": "fee_table", "confidence": 0.78},
+    }
+
+    page = LogicBuilder.build_page("excel_1", sheet_info, logic_page_name="bill_charge_page")
+    area = LogicBuilder.build_grouped_area(
+        "excel_1",
+        sheet_info,
+        group=RegionGroup(region_ids=["region_1", "region_2"], reason="same page content"),
+        region_by_id={"region_1": region1, "region_2": region2},
+        classification_by_id=classifications,
+    )
+
+    assert page["logic_page_name"] == "bill_charge_page"
+    assert area["logic_area_type"] == "fee_table"
+    assert len(area["location_list"]) == 2
+    assert area["group_reason"] == "same page content"
+
+
 def test_handle_excel_parse_returns_ws_result_for_multiple_sheets(tmp_path):
     path = tmp_path / "full.xlsx"
     make_workbook(path)
