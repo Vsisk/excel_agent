@@ -14,7 +14,6 @@ class RegionMarkdownBuilder:
         region_id: str,
         region: ExcelRegion,
         rows: list[list[Any]],
-        classification: ClassificationDict,
         max_instance_rows: int = 10,
     ) -> RegionSnapshot:
         normalized = [[RegionMarkdownBuilder._stringify(cell) for cell in row] for row in rows]
@@ -41,7 +40,6 @@ class RegionMarkdownBuilder:
             cell_range=region.cell_range,
             markdown=markdown,
             raw_text=region.raw_text,
-            rule_classification=classification,
             truncated=truncated,
         )
 

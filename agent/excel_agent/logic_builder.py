@@ -61,11 +61,15 @@ class LogicBuilder:
         *,
         group: RegionGroup,
         region_by_id: dict[str, ExcelRegion],
-        classification_by_id: dict[str, ClassificationDict],
+        classification_by_id: dict[str, ClassificationDict] | None = None,
     ) -> JsonDict:
         first_region = region_by_id[group.region_ids[0]]
         first_range = first_region.cell_range.to_dict()
-        area_type = LogicBuilder._dominant_area_type(group.region_ids, classification_by_id)
+        area_type = (
+            LogicBuilder._dominant_area_type(group.region_ids, classification_by_id)
+            if classification_by_id
+            else "unknown"
+        )
         return {
             "logic_area_id": gen_id(),
             "logic_area_name": f"{sheet_info['sheet_name']}!R{first_range['start_row']}C{first_range['start_col']}",

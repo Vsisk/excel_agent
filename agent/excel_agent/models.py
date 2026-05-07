@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import random
 from typing import Any, Literal, TypedDict
@@ -139,8 +139,10 @@ class RegionSnapshot:
     cell_range: CellRange
     markdown: str
     raw_text: list[str]
-    rule_classification: ClassificationDict
-    truncated: bool
+    rule_classification: ClassificationDict = field(
+        default_factory=lambda: {"logic_area_type": "unknown", "confidence": 1.0}
+    )
+    truncated: bool = False
 
 
 @dataclass(frozen=True)

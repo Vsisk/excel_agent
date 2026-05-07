@@ -45,16 +45,13 @@ def handle_excel_parse(req: ExcelParseRequest, *, llm_generate: LLMGenerate | No
 
             for index, region in enumerate(regions, start=1):
                 region_id = f"region_{index}"
-                classification = STRUCTURAL_CLASSIFICATION
                 rows = reader.read_range(sheet_info["sheet_name"], region.cell_range)
                 snapshot = RegionMarkdownBuilder.build_region_snapshot(
                     region_id=region_id,
                     region=region,
-                    rows=rows,
-                    classification=classification,
+                    rows=rows
                 )
                 region_by_id[region_id] = region
-                classification_by_id[region_id] = classification
                 snapshots.append(snapshot)
 
             visual = visualizer.collect_visual_summaries(
@@ -88,8 +85,7 @@ def handle_excel_parse(req: ExcelParseRequest, *, llm_generate: LLMGenerate | No
                         excel_instance_id,
                         sheet_info,
                         group=group,
-                        region_by_id=region_by_id,
-                        classification_by_id=classification_by_id,
+                        region_by_id=region_by_id
                     )
                 )
     finally:

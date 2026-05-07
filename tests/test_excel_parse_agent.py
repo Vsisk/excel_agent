@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+import xlwt
 
 from agent.excel_agent.excel_parse_handler import handle_excel_parse
 from agent.excel_agent.excel_reader import ExcelReader
@@ -77,9 +78,41 @@ def make_workbook(path: Path) -> None:
     wb.save(path)
 
 
+def make_xls_workbook(path: Path) -> None:
+    wb = xlwt.Workbook()
+    summary = wb.add_sheet("Summary")
+    summary.write(0, 0, "Invoice")
+    summary.write(0, 1, "Amount")
+    summary.write(1, 0, "INV-001")
+    summary.write(1, 1, 120)
+    detail = wb.add_sheet("Details")
+    detail.write(0, 0, "Item")
+    detail.write(0, 1, "Qty")
+    detail.write(1, 0, "Storage")
+    detail.write(1, 1, 3)
+    wb.save(str(path))
+
+
 def test_excel_reader_reads_sheet_metadata_and_rows(tmp_path):
     path = tmp_path / "sample.xlsx"
     make_workbook(path)
+
+    reader = ExcelReader(str(path))
+    workbook = reader.read()
+
+    assert [sheet["sheet_name"] for sheet in workbook["sheet_list"]] == ["Summary", "Details"]
+    assert workbook["sheet_list"][0]["sheet_index"] == 0
+    assert workbook["sheet_list"][0]["max_row"] == 2
+    assert workbook["sheet_list"][0]["max_col"] == 2
+    rows = list(reader.iter_rows("Summary", min_row=1, max_row=2, min_col=1, max_col=2))
+    reader.close()
+
+    assert rows == [["Invoice", "Amount"], ["INV-001", 120]]
+
+
+def test_excel_reader_reads_legacy_xls_metadata_and_rows(tmp_path):
+    path = tmp_path / "legacy.xls"
+    make_xls_workbook(path)
 
     reader = ExcelReader(str(path))
     workbook = reader.read()
@@ -114,7 +147,6 @@ def test_region_markdown_builder_preserves_table_and_truncates():
         region_id="region_1",
         region=region,
         rows=rows,
-        classification={"logic_area_type": "fee_table", "confidence": 0.78},
         max_instance_rows=10,
     )
 
@@ -123,6 +155,7 @@ def test_region_markdown_builder_preserves_table_and_truncates():
     assert "row-11" not in snapshot.markdown
     assert "truncated after 10 rows" in snapshot.markdown
     assert snapshot.truncated is True
+    assert snapshot.rule_classification == {"logic_area_type": "unknown", "confidence": 1.0}
 
 
 def test_llm_sheet_grouper_validates_groups_and_page_name():
