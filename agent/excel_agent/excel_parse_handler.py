@@ -6,14 +6,14 @@ from .excel_visualizer import ExcelVisualizer
 from .excel_reader import ExcelReader
 from .llm_sheet_grouper import LLMSheetGrouper
 from .logic_builder import LogicBuilder
-from .models import ExcelParseRequest, JsonDict
+from .models import ClassificationDict, ExcelParseRequest, JsonDict
 from .region_markdown_builder import RegionMarkdownBuilder
-from .region_classifier import RegionClassifier
 from .region_splitter import RegionSplitter
 from .sheet_profiler import SheetProfiler
 
 
 LLMGenerate = Callable[..., dict[str, Any]]
+STRUCTURAL_CLASSIFICATION: ClassificationDict = {"logic_area_type": "unknown", "confidence": 1.0}
 
 
 def handle_excel_parse(req: ExcelParseRequest, *, llm_generate: LLMGenerate | None = None) -> JsonDict:
@@ -45,7 +45,7 @@ def handle_excel_parse(req: ExcelParseRequest, *, llm_generate: LLMGenerate | No
 
             for index, region in enumerate(regions, start=1):
                 region_id = f"region_{index}"
-                classification = RegionClassifier.classify(region)
+                classification = STRUCTURAL_CLASSIFICATION
                 rows = reader.read_range(sheet_info["sheet_name"], region.cell_range)
                 snapshot = RegionMarkdownBuilder.build_region_snapshot(
                     region_id=region_id,

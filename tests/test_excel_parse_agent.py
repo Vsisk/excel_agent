@@ -444,7 +444,7 @@ def test_region_splitter_returns_no_regions_for_empty_sheet(tmp_path):
     assert regions == []
 
 
-def test_region_classifier_detects_fields():
+def test_region_classifier_is_neutral_legacy_adapter():
     region = ExcelRegion(
         sheet_id="sheet_1",
         cell_range=CellRange(1, 2, 1, 2),
@@ -452,25 +452,44 @@ def test_region_classifier_detects_fields():
     )
 
     assert RegionClassifier.classify(region) == {
-        "logic_area_type": "fields",
-        "confidence": 0.82,
+        "logic_area_type": "unknown",
+        "confidence": 1.0,
     }
+    assert not hasattr(RegionClassifier, "_looks_like_fields")
+    assert not hasattr(RegionClassifier, "_has_clear_header")
+    assert not hasattr(RegionClassifier, "_looks_like_fee_table")
+    assert not hasattr(RegionClassifier, "_looks_like_plain_text")
 
 
-def test_region_classifier_detects_tables_and_plain_text():
-    table = ExcelRegion(
-        sheet_id="sheet_1",
-        cell_range=CellRange(1, 3, 1, 3),
-        raw_text=["Item Qty Amount", "Compute 2 100", "Storage 3 50"],
+def test_handle_excel_parse_does_not_call_rule_classifier(tmp_path, monkeypatch):
+    path = tmp_path / "no_classifier.xlsx"
+    make_workbook(path)
+
+    def fail_classify(*args, **kwargs):
+        raise AssertionError("RegionClassifier.classify should not be called")
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        if prompt_template == "excel_sheet_grouping":
+            return {
+                "logic_page_name": "bill_summary_page",
+                "groups": [{"region_ids": ["region_1"], "reason": "single structural region"}],
+            }
+        return {"target_id": kwargs["target_id"], "summary": "", "confidence": 0.0}
+
+    monkeypatch.setattr(RegionClassifier, "classify", fail_classify)
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_no_classifier",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=fake_generate,
     )
-    text = ExcelRegion(
-        sheet_id="sheet_1",
-        cell_range=CellRange(1, 1, 1, 1),
-        raw_text=["This billing description contains a long explanatory paragraph with many words."],
-    )
 
-    assert RegionClassifier.classify(table)["logic_area_type"] == "fee_table"
-    assert RegionClassifier.classify(text)["logic_area_type"] == "plain_text"
+    assert response["status"] == "success"
 
 
 def test_logic_builder_creates_page_and_area():
