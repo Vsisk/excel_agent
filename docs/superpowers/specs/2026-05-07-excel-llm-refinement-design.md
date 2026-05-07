@@ -1,8 +1,36 @@
-# Excel LLM Refinement Design
+# Excel Sheet LLM Grouping Design
 
 ## Goal
 
-Add an optional LLM refinement stage to the Excel parse agent so `EXCEL_PARSE` can improve region classification, region merge/split decisions, logic page binding, and visual review while preserving the current rule-based parser as a reliable fallback.
+Add an optional sheet-level LLM grouping stage to the Excel parse agent. For each sheet, the agent first uses rules to split regions, converts each region to compact Markdown, then calls LLM once to choose the sheet's logic page name and group related regions.
+
+The LLM grouping output is intentionally minimal so later flows can reuse the same downstream logic for both whole-sheet parsing and single-region input.
+
+## Corrected Scope
+
+The LLM does not own low-level parsing, region splitting, area naming, area typing, or cross-sheet binding in this stage.
+
+It only returns:
+
+```json
+{
+  "logic_page_name": "bill_summary_page",
+  "groups": [
+    {
+      "region_ids": ["region_1", "region_2"],
+      "reason": "string"
+    }
+  ]
+}
+```
+
+Valid `logic_page_name` values are:
+
+- `bill_summary_page`
+- `bill_charge_page`
+- `bill_cdr_page`
+
+Each Excel sheet still maps to exactly one `logic_page`.
 
 ## Current Context
 
@@ -24,276 +52,270 @@ The new `agent/llm/` package provides:
 
 There is not yet a `prompt.json`.
 
-## Design Choice
+## Components
 
-Use an additive LLM refinement layer after initial rule parsing and before logic output building.
+### `models.py`
 
-The rule parser remains the source of safe fallback behavior. LLM output is treated as advisory and must be normalized and validated before it changes regions or classifications.
+Add internal structures for stable region grouping:
 
-If LLM is disabled, unusable, or raises an error, the handler still returns:
+- `RegionSnapshot`
+  - `region_id`
+  - `sheet_id`
+  - `cell_range`
+  - `markdown`
+  - `raw_text`
+  - `rule_classification`
+  - `truncated`
+- `SheetGrouping`
+  - `logic_page_name`
+  - `groups`
+- `RegionGroup`
+  - `region_ids`
+  - `reason`
+- `GroupingResult`
+  - per-sheet groupings
+  - fallback metadata
+  - visual review metadata
 
-```json
-{
-  "request_type": "EXCEL_PARSE_RESULT",
-  "status": "success"
-}
+These are internal agent structures. The external WS request shape stays unchanged.
+
+### `region_markdown_builder.py`
+
+Responsibilities:
+
+- Convert each rule-split region to Markdown before LLM grouping.
+- Preserve table structure where possible.
+- Truncate large table instances.
+
+Public interface:
+
+```python
+class RegionMarkdownBuilder:
+    @staticmethod
+    def build_region_snapshot(
+        *,
+        region_id: str,
+        region: ExcelRegion,
+        rows: list[list[object]],
+        classification: ClassificationDict,
+        max_instance_rows: int = 10,
+    ) -> RegionSnapshot:
+        ...
 ```
 
-with the rule-based result. `parse_index` records the fallback reason.
+Markdown rules:
 
-## Components
+- If the region has more than one row and more than one column, render as a Markdown table.
+- If the region looks like key-value rows, render as a two-column Markdown table.
+- Otherwise render as bullet lines or plain text.
+- For data tables with more than 10 instance rows, keep the header and first 10 instance rows.
+- Mark truncated snapshots with `truncated=true` and include a note in Markdown such as `... truncated after 10 rows`.
+
+The builder may read only the region range, not the whole sheet.
 
 ### `excel_visualizer.py`
 
 Responsibilities:
 
-- Detect embedded images in Excel sheets.
-- Create visual review payloads for:
-  - low-confidence cell regions
+- Generate optional visual review inputs for:
+  - low-confidence rule regions
   - embedded workbook images
-- Return base64 PNG image payloads plus metadata that identifies the source.
+- Produce VL summaries that can be included as extra context in the sheet-level grouping prompt.
 
-Expected public interface:
+The visual stage supplements grouping context. It does not directly create final groups or logic areas.
 
-```python
-class ExcelVisualizer:
-    @staticmethod
-    def collect_visual_targets(
-        file_uri: str,
-        sheet_info_list: list[SheetInfoDict],
-        classified_regions: list[ClassifiedRegion],
-        confidence_threshold: float,
-    ) -> VisualCollection:
-        ...
-```
+Low-confidence cell regions:
 
-Visual target types:
+- A region is low-confidence when rule classification confidence is below `0.65`.
+- The visualizer renders a lightweight PNG preview of the cell range from values and cell coordinates.
+- VL returns a compact summary of what the region appears to contain.
 
-- `cell_region`
-- `embedded_image`
+Embedded images:
 
-For `cell_region`, the metadata includes `sheet_id`, `sheet_name`, `sheet_index`, and `cell_range`.
+- The visualizer detects images with `openpyxl` where possible.
+- Each embedded image is sent to VL for a compact summary.
+- If anchor metadata can identify a sheet and approximate cell location, that metadata is included in grouping context.
 
-For `embedded_image`, the metadata includes `sheet_id`, `sheet_name`, `sheet_index`, image index, and anchor details when available.
+If rendering or extraction fails, the visualizer records a skip reason. Failure does not fail `EXCEL_PARSE`.
 
-Implementation preference:
-
-- Use `openpyxl` for embedded image extraction where possible.
-- For low-confidence cell range previews, generate a deterministic lightweight PNG rendering from cell values rather than automating Excel. This keeps tests reliable and avoids GUI requirements.
-- If a visual target cannot be generated, skip it and record a structured skip reason.
-
-### `llm_region_refiner.py`
+### `llm_sheet_grouper.py`
 
 Responsibilities:
 
-- Build compact region summaries for base LLM review.
-- Call base LLM for:
-  - classification correction
-  - merge suggestions
-  - split suggestions
-  - logic page binding
-- Call VL LLM for:
-  - low-confidence cell region screenshots
-  - embedded image review
-- Normalize and validate all LLM suggestions.
-- Apply valid suggestions to produce refined classified regions and page binding metadata.
-- Return fallback metadata when LLM is unavailable or fails.
+- For each sheet, call base LLM once with:
+  - sheet metadata
+  - region IDs
+  - region ranges
+  - region Markdown
+  - truncation flags
+  - optional VL summaries
+- Validate the LLM output.
+- Return one grouping result per sheet.
 
-Expected public interface:
+Public interface:
 
 ```python
-class LLMRegionRefiner:
-    def refine(
+class LLMSheetGrouper:
+    def group_sheet(
         self,
         *,
-        excel_instance_id: str,
-        workbook: ExcelWorkbookDict,
-        regions_by_sheet: dict[str, list[ExcelRegion]],
-        classifications_by_region: dict[str, ClassificationDict],
-        file_uri: str,
-    ) -> RefinementResult:
+        sheet_info: SheetInfoDict,
+        region_snapshots: list[RegionSnapshot],
+        visual_summaries: list[dict],
+    ) -> SheetGrouping:
         ...
 ```
 
-The refiner accepts dependency injection for tests:
+Validation rules:
 
-```python
-LLMRegionRefiner(
-    llm_generate=generate_by_llm,
-    visualizer=ExcelVisualizer(),
-    confidence_threshold=0.65,
-)
-```
+- `logic_page_name` must be one of the three allowed values.
+- Every `region_id` in every group must exist in the current sheet.
+- A region can appear in at most one group.
+- Empty groups are ignored.
+- Regions omitted by LLM are added as single-region fallback groups.
+- Duplicate region IDs inside one group are deduplicated in original region order.
+- Invalid LLM responses trigger sheet-level fallback grouping.
 
-### `models.py`
-
-Add small internal dataclasses or `TypedDict`s for the refinement stage:
-
-- `ClassifiedRegion`
-- `VisualTarget`
-- `VisualCollection`
-- `LLMRegionAction`
-- `PageBinding`
-- `RefinementResult`
-
-These models are internal to the agent. The external WS input/output protocol does not change.
-
-### `prompt.json`
-
-Add prompt keys:
-
-- `excel_region_refine`
-- `excel_region_visual_review`
-
-Both prompts require strict JSON object output.
-
-`excel_region_refine` returns:
+Fallback grouping:
 
 ```json
 {
-  "region_updates": [
+  "logic_page_name": "bill_summary_page",
+  "groups": [
     {
-      "region_id": "string",
-      "logic_area_type": "fields | fee_table | detail_table | plain_text | unknown",
-      "confidence": 0.0,
-      "reason": "string"
+      "region_ids": ["region_1"],
+      "reason": "fallback: llm unavailable"
     }
-  ],
-  "merge_suggestions": [
+  ]
+}
+```
+
+### `prompt.json`
+
+Add these prompt keys:
+
+- `excel_sheet_grouping`
+- `excel_visual_summary`
+
+`excel_sheet_grouping` requires strict JSON object output:
+
+```json
+{
+  "logic_page_name": "bill_summary_page | bill_charge_page | bill_cdr_page",
+  "groups": [
     {
-      "source_region_ids": ["string"],
-      "logic_area_type": "fields | fee_table | detail_table | plain_text | unknown",
-      "reason": "string"
-    }
-  ],
-  "split_suggestions": [
-    {
-      "source_region_id": "string",
-      "cell_ranges": [
-        {
-          "start_row": 1,
-          "end_row": 1,
-          "start_col": 1,
-          "end_col": 1
-        }
-      ],
-      "reason": "string"
-    }
-  ],
-  "page_bindings": [
-    {
-      "region_id": "string",
-      "sheet_id": "string",
+      "region_ids": ["region_1", "region_2"],
       "reason": "string"
     }
   ]
 }
 ```
 
-`excel_region_visual_review` returns:
+The prompt must tell the model:
+
+- Choose exactly one page name from the allowed list.
+- Group only region IDs from the input.
+- Do not invent region IDs.
+- Do not output area names or area types.
+- Keep groups semantically cohesive.
+
+`excel_visual_summary` returns:
 
 ```json
 {
   "target_id": "string",
-  "logic_area_type": "fields | fee_table | detail_table | plain_text | unknown",
-  "confidence": 0.0,
-  "recommended_action": "keep | update | split | merge | ignore",
-  "reason": "string"
+  "summary": "string",
+  "confidence": 0.0
 }
 ```
 
 ## Data Flow
 
-The enhanced `EXCEL_PARSE` flow is:
+For each `EXCEL_PARSE` request:
 
-1. Validate request.
+1. Validate the WS request.
 2. Read workbook metadata.
 3. For each sheet:
    - profile sheet
-   - split regions
+   - split regions by rules
    - rule-classify regions
-4. Build `ClassifiedRegion` records with stable internal region IDs.
-5. Call `LLMRegionRefiner.refine()`.
-6. If refinement succeeds:
-   - apply valid classification updates
-   - apply safe merges
-   - apply safe splits
-   - apply page bindings
-7. If refinement fails:
-   - keep rule result
-   - record fallback metadata
-8. Build `logic_page_list` and `logic_area_list`.
-9. Return `EXCEL_PARSE_RESULT`.
+   - assign stable region IDs
+   - read each region range and build Markdown snapshot
+   - collect low-confidence visual summaries
+   - collect embedded image visual summaries
+   - call base LLM once for sheet grouping
+   - fallback to one-region groups if LLM fails
+4. Build one `logic_page` per sheet using the returned `logic_page_name`.
+5. Build one `logic_area` per returned group.
+6. Return `EXCEL_PARSE_RESULT`.
 
-## Merge And Split Rules
+## Logic Output Mapping
 
-LLM suggestions are accepted only when they are safe:
+### `logic_page`
 
-- All referenced region IDs must exist.
-- Merge candidates must be on the same sheet.
-- Merge output must remain a rectangular bounding range.
-- Split ranges must be inside the source region.
-- Split ranges must use 1-based indexes.
-- Split ranges must not overlap.
-- Invalid or partial suggestions are ignored, not fatal.
-
-When merging regions, `raw_text` is concatenated in row-major region order.
-
-When splitting regions, raw text is regenerated from the workbook for the suggested sub-ranges.
-
-## Logic Page Binding
-
-Each `logic_page` still maps to one Excel sheet.
-
-The LLM can suggest a page binding for each region. The first implementation only accepts bindings that point to the region's own sheet. This keeps the output stable while leaving room for future cross-sheet semantic grouping.
-
-Accepted binding metadata is recorded in `parse_index`, but the external `logic_page_relation` shape stays unchanged.
-
-## Visual Review
-
-VL review is triggered for:
-
-- rule or base-LLM classified regions with confidence below `0.65`
-- embedded images found in the workbook
-
-Visual review can update a region classification when:
-
-- the target maps to an existing region, and
-- VL confidence is greater than the current confidence.
-
-Embedded images that do not map to an existing region produce review metadata in `parse_index`. They do not create a `logic_area` unless the image can be associated with a sheet anchor and a valid cell range.
-
-## Error Handling And Fallback
-
-LLM refinement is best-effort.
-
-On any LLM or visualizer error:
-
-- `status` remains `"success"`
-- rule-based logic output is returned
-- `parse_index` includes:
-  - `llm_enabled`
-  - `llm_used`
-  - `llm_fallback_reason`
-  - `visual_review_count`
-  - `visual_review_skipped`
-
-Example:
+Add `logic_page_name` while preserving the existing relation shape:
 
 ```json
 {
-  "llm_enabled": true,
-  "llm_used": false,
-  "llm_fallback_reason": "LLM settings are not usable",
-  "visual_review_count": 0,
-  "visual_review_skipped": [
-    {
-      "target_type": "cell_region",
-      "reason": "visual target generation unavailable"
-    }
-  ]
+  "logic_page_id": "string",
+  "logic_page_name": "bill_summary_page",
+  "logic_page_relation": {
+    "type": "excel",
+    "excel_instance_id": "string",
+    "sheet_id": "string",
+    "sheet_name": "string",
+    "sheet_index": 0
+  }
 }
 ```
+
+### `logic_area`
+
+Each group becomes one logic area.
+
+Because the grouping prompt no longer outputs area name or area type:
+
+- `logic_area_name` is generated locally from sheet name and first region range.
+- `logic_area_type` is derived locally from the grouped regions' rule classifications.
+- `logic_area_description` is generated locally and can include the group reason.
+- `location_list` contains one location per grouped region.
+
+The group reason can be recorded as internal metadata, for example:
+
+```json
+{
+  "group_reason": "same charge table split by blank rows"
+}
+```
+
+## LLM Failure Behavior
+
+LLM is optional and best-effort.
+
+If base LLM, VL LLM, visual rendering, or image extraction fails:
+
+- `status` remains `"success"`
+- rule regions are preserved
+- each region becomes its own group unless a valid grouping exists
+- `logic_page_name` defaults to `bill_summary_page`
+- `parse_index` records:
+  - `llm_enabled`
+  - `llm_used`
+  - `llm_fallback_reason`
+  - `sheet_grouping_count`
+  - `visual_review_count`
+  - `visual_review_skipped`
+
+## Single-Region Compatibility
+
+The grouping output intentionally excludes fields that belong to later stages:
+
+- no area type
+- no area name
+- no final schema mapping
+- no EDSL output
+
+This allows a future single-region flow to reuse the same downstream area naming/type-generation step without depending on sheet-level grouping prompts.
 
 ## Testing Strategy
 
@@ -301,18 +323,19 @@ Tests should not require real LLM calls.
 
 Use fake LLM functions to cover:
 
-- base LLM classification update
-- safe merge suggestion
-- safe split suggestion
-- invalid suggestion ignored
-- low-confidence region triggers VL review
-- embedded image target triggers VL review when present
-- LLM unavailable or failing returns rule output with fallback metadata
+- sheet grouping returns valid page name and groups
+- invalid page name falls back to `bill_summary_page`
+- invented region IDs are ignored
+- omitted region IDs are added as single-region fallback groups
+- duplicate region IDs are deduplicated
+- table Markdown preserves header and rows
+- table Markdown truncates after 10 instance rows
+- low-confidence region triggers VL summary
+- embedded image target triggers VL summary when present
+- LLM unavailable returns success with fallback metadata
 - no low-confidence region and no embedded image avoids VL calls
 
-Keep the current rule-parser tests.
-
-Add focused tests for the new refiner and handler integration.
+Keep the existing rule parser tests.
 
 ## Non-Goals
 
@@ -321,10 +344,12 @@ This change does not add:
 - frontend logic
 - HTTP endpoints
 - EDSL writing
-- hard dependency on real LLM availability
+- real LLM dependency in tests
 - GUI Excel automation
-- cross-sheet semantic page merging
+- LLM-generated area names
+- LLM-generated area types
+- cross-sheet logic page binding
 
 ## Self-Review
 
-The design keeps the existing WS protocol unchanged and adds only optional enrichment. It covers region classification, merging, splitting, logic page binding, low-confidence region screenshots, embedded image review, and fallback behavior. It avoids placeholders and makes invalid LLM output non-fatal.
+The design matches the corrected requirement: each sheet maps to one logic page, rules split regions first, one base LLM call per sheet groups existing region IDs and chooses one of three logic page names, Markdown preserves table structure with truncation after 10 instance rows, and LLM failure degrades to successful rule output. It keeps the grouping prompt minimal for future single-region compatibility.
