@@ -7,7 +7,15 @@ from openpyxl import Workbook
 from agent.excel_agent.excel_parse_handler import handle_excel_parse
 from agent.excel_agent.excel_reader import ExcelReader
 from agent.excel_agent.logic_builder import LogicBuilder
-from agent.excel_agent.models import CellRange, ExcelRegion, gen_id
+from agent.excel_agent.models import (
+    ALLOWED_LOGIC_PAGE_NAMES,
+    CellRange,
+    ExcelRegion,
+    RegionGroup,
+    RegionSnapshot,
+    SheetGrouping,
+    gen_id,
+)
 from agent.excel_agent.region_classifier import RegionClassifier
 from agent.excel_agent.region_splitter import RegionSplitter
 from agent.excel_agent.sheet_profiler import SheetProfiler
@@ -28,6 +36,26 @@ def test_region_model_uses_one_based_range():
 
     assert region.cell_range.start_row == 1
     assert region.cell_range.start_col == 1
+
+
+def test_grouping_models_capture_minimal_llm_contract():
+    snapshot = RegionSnapshot(
+        region_id="region_1",
+        sheet_id="sheet_1",
+        cell_range=CellRange(1, 2, 1, 2),
+        markdown="| A | B |\n| --- | --- |\n| x | y |",
+        raw_text=["A B", "x y"],
+        rule_classification={"logic_area_type": "fields", "confidence": 0.82},
+        truncated=False,
+    )
+    grouping = SheetGrouping(
+        logic_page_name="bill_summary_page",
+        groups=[RegionGroup(region_ids=["region_1"], reason="single section")],
+    )
+
+    assert "bill_charge_page" in ALLOWED_LOGIC_PAGE_NAMES
+    assert snapshot.region_id == grouping.groups[0].region_ids[0]
+    assert grouping.logic_page_name == "bill_summary_page"
 
 
 def make_workbook(path: Path) -> None:

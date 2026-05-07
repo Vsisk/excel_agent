@@ -61,6 +61,8 @@ class ExcelParseRequest(TypedDict):
 
 
 LogicAreaType = Literal["fields", "fee_table", "detail_table", "plain_text", "unknown"]
+ALLOWED_LOGIC_PAGE_NAMES = ("bill_summary_page", "bill_charge_page", "bill_cdr_page")
+LogicPageName = Literal["bill_summary_page", "bill_charge_page", "bill_cdr_page"]
 
 
 @dataclass(frozen=True)
@@ -130,4 +132,46 @@ class ExcelRegion:
         return self.cell_range.end_col - self.cell_range.start_col + 1
 
 
+@dataclass(frozen=True)
+class RegionSnapshot:
+    region_id: str
+    sheet_id: str
+    cell_range: CellRange
+    markdown: str
+    raw_text: list[str]
+    rule_classification: ClassificationDict
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class RegionGroup:
+    region_ids: list[str]
+    reason: str
+
+
+@dataclass(frozen=True)
+class SheetGrouping:
+    logic_page_name: LogicPageName
+    groups: list[RegionGroup]
+
+
+@dataclass(frozen=True)
+class VisualSummary:
+    target_id: str
+    target_type: str
+    sheet_id: str
+    summary: str
+    confidence: float
+
+
 JsonDict = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class GroupingMetadata:
+    llm_enabled: bool
+    llm_used: bool
+    llm_fallback_reason: str | None
+    sheet_grouping_count: int
+    visual_review_count: int
+    visual_review_skipped: list[JsonDict]
