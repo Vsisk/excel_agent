@@ -6,6 +6,7 @@ from openpyxl import Workbook
 
 from agent.excel_agent.excel_parse_handler import handle_excel_parse
 from agent.excel_agent.excel_reader import ExcelReader
+from agent.excel_agent.llm_sheet_grouper import LLMSheetGrouper
 from agent.excel_agent.logic_builder import LogicBuilder
 from agent.excel_agent.models import (
     ALLOWED_LOGIC_PAGE_NAMES,
@@ -121,6 +122,93 @@ def test_region_markdown_builder_preserves_table_and_truncates():
     assert "row-11" not in snapshot.markdown
     assert "truncated after 10 rows" in snapshot.markdown
     assert snapshot.truncated is True
+
+
+def test_llm_sheet_grouper_validates_groups_and_page_name():
+    calls = []
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        calls.append((prompt_template, llm_name, kwargs))
+        return {
+            "logic_page_name": "bill_charge_page",
+            "groups": [
+                {"region_ids": ["region_1", "missing", "region_1"], "reason": "charges"},
+            ],
+        }
+
+    snapshots = [
+        RegionSnapshot(
+            "region_1",
+            "sheet_1",
+            CellRange(1, 2, 1, 2),
+            "r1",
+            [],
+            {"logic_area_type": "fields", "confidence": 0.82},
+            False,
+        ),
+        RegionSnapshot(
+            "region_2",
+            "sheet_1",
+            CellRange(5, 6, 1, 3),
+            "r2",
+            [],
+            {"logic_area_type": "fee_table", "confidence": 0.78},
+            False,
+        ),
+    ]
+    grouping = LLMSheetGrouper(llm_generate=fake_generate).group_sheet(
+        sheet_info={
+            "sheet_id": "sheet_1",
+            "sheet_name": "Charges",
+            "sheet_index": 0,
+            "max_row": 6,
+            "max_col": 3,
+            "merged_cells": [],
+        },
+        region_snapshots=snapshots,
+        visual_summaries=[],
+    )
+
+    assert grouping.logic_page_name == "bill_charge_page"
+    assert [group.region_ids for group in grouping.groups] == [["region_1"], ["region_2"]]
+    assert calls[0][0] == "excel_sheet_grouping"
+    assert calls[0][1] == "base"
+
+
+def test_llm_sheet_grouper_falls_back_on_failure():
+    def failing_generate(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    snapshots = [
+        RegionSnapshot(
+            "region_1",
+            "sheet_1",
+            CellRange(1, 1, 1, 1),
+            "r1",
+            [],
+            {"logic_area_type": "unknown", "confidence": 0.35},
+            False,
+        )
+    ]
+    grouper = LLMSheetGrouper(llm_generate=failing_generate)
+
+    grouping = grouper.group_sheet(
+        sheet_info={
+            "sheet_id": "sheet_1",
+            "sheet_name": "Unknown",
+            "sheet_index": 0,
+            "max_row": 1,
+            "max_col": 1,
+            "merged_cells": [],
+        },
+        region_snapshots=snapshots,
+        visual_summaries=[],
+    )
+
+    assert grouping.logic_page_name == "bill_summary_page"
+    assert grouping.groups[0].region_ids == ["region_1"]
+    assert "fallback" in grouping.groups[0].reason
+    assert grouper.last_fallback_reason == "boom"
 
 
 def test_sheet_profiler_computes_used_range_and_density(tmp_path):
