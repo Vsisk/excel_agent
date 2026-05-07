@@ -341,6 +341,109 @@ def test_region_splitter_splits_by_empty_rows_and_columns(tmp_path):
     assert regions[1].raw_text == ["Item Qty Amount", "Compute 2 100"]
 
 
+def test_region_splitter_splits_by_two_consecutive_empty_rows(tmp_path):
+    path = tmp_path / "empty_rows.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Rows"
+    ws["A1"] = "Customer"
+    ws["B1"] = "ACME"
+    ws["A2"] = "Month"
+    ws["B2"] = "2026-05"
+    ws["A5"] = "Item"
+    ws["B5"] = "Amount"
+    ws["A6"] = "Compute"
+    ws["B6"] = 100
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert [region.cell_range.to_dict() for region in regions] == [
+        {"start_row": 1, "end_row": 2, "start_col": 1, "end_col": 2},
+        {"start_row": 5, "end_row": 6, "start_col": 1, "end_col": 2},
+    ]
+
+
+def test_region_splitter_splits_by_two_consecutive_empty_columns(tmp_path):
+    path = tmp_path / "empty_cols.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Columns"
+    ws["A1"] = "Customer"
+    ws["B1"] = "ACME"
+    ws["A2"] = "Month"
+    ws["B2"] = "2026-05"
+    ws["E1"] = "Item"
+    ws["F1"] = "Amount"
+    ws["E2"] = "Compute"
+    ws["F2"] = 100
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert [region.cell_range.to_dict() for region in regions] == [
+        {"start_row": 1, "end_row": 2, "start_col": 1, "end_col": 2},
+        {"start_row": 1, "end_row": 2, "start_col": 5, "end_col": 6},
+    ]
+
+
+def test_region_splitter_splits_on_row_density_jump(tmp_path):
+    path = tmp_path / "density_jump.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Density"
+    ws["A1"] = "Invoice"
+    ws["A2"] = "Item"
+    ws["B2"] = "Qty"
+    ws["C2"] = "Amount"
+    ws["D2"] = "Tax"
+    ws["E2"] = "Total"
+    ws["A3"] = "Compute"
+    ws["B3"] = 2
+    ws["C3"] = 100
+    ws["D3"] = 8
+    ws["E3"] = 108
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert [region.cell_range.to_dict() for region in regions] == [
+        {"start_row": 1, "end_row": 1, "start_col": 1, "end_col": 1},
+        {"start_row": 2, "end_row": 3, "start_col": 1, "end_col": 5},
+    ]
+
+
+def test_region_splitter_returns_no_regions_for_empty_sheet(tmp_path):
+    path = tmp_path / "empty_split.xlsx"
+    wb = Workbook()
+    wb.active.title = "Empty"
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert regions == []
+
+
 def test_region_classifier_detects_fields():
     region = ExcelRegion(
         sheet_id="sheet_1",
