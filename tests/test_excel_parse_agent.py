@@ -17,6 +17,7 @@ from agent.excel_agent.models import (
     gen_id,
 )
 from agent.excel_agent.region_classifier import RegionClassifier
+from agent.excel_agent.region_markdown_builder import RegionMarkdownBuilder
 from agent.excel_agent.region_splitter import RegionSplitter
 from agent.excel_agent.sheet_profiler import SheetProfiler
 
@@ -89,6 +90,37 @@ def test_excel_reader_reads_sheet_metadata_and_rows(tmp_path):
     reader.close()
 
     assert rows == [["Invoice", "Amount"], ["INV-001", 120]]
+
+
+def test_excel_reader_reads_only_requested_range(tmp_path):
+    path = tmp_path / "range.xlsx"
+    make_workbook(path)
+    reader = ExcelReader(str(path))
+    reader.read()
+
+    rows = reader.read_range("Summary", CellRange(1, 2, 1, 2))
+    reader.close()
+
+    assert rows == [["Invoice", "Amount"], ["INV-001", 120]]
+
+
+def test_region_markdown_builder_preserves_table_and_truncates():
+    region = ExcelRegion("sheet_1", CellRange(1, 13, 1, 2), raw_text=[])
+    rows = [["Item", "Amount"]] + [[f"row-{i}", i] for i in range(1, 13)]
+
+    snapshot = RegionMarkdownBuilder.build_region_snapshot(
+        region_id="region_1",
+        region=region,
+        rows=rows,
+        classification={"logic_area_type": "fee_table", "confidence": 0.78},
+        max_instance_rows=10,
+    )
+
+    assert "| Item | Amount |" in snapshot.markdown
+    assert "| row-10 | 10 |" in snapshot.markdown
+    assert "row-11" not in snapshot.markdown
+    assert "truncated after 10 rows" in snapshot.markdown
+    assert snapshot.truncated is True
 
 
 def test_sheet_profiler_computes_used_range_and_density(tmp_path):

@@ -6,7 +6,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from .models import ExcelWorkbookDict, SheetInfo, SheetInfoDict
+from .models import CellRange, ExcelWorkbookDict, SheetInfo, SheetInfoDict
 
 
 class ExcelReader:
@@ -64,6 +64,17 @@ class ExcelReader:
             values_only=True,
         ):
             yield list(row)
+
+    def read_range(self, sheet_name: str, cell_range: CellRange) -> list[list[Any]]:
+        return list(
+            self.iter_rows(
+                sheet_name,
+                min_row=cell_range.start_row,
+                max_row=cell_range.end_row,
+                min_col=cell_range.start_col,
+                max_col=cell_range.end_col,
+            )
+        )
 
     def close(self) -> None:
         if self._workbook is not None:
