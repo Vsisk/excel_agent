@@ -469,6 +469,59 @@ def test_handle_excel_parse_returns_ws_result_for_multiple_sheets(tmp_path):
     assert response["payload"]["parse_index"]["area_count"] == len(response["payload"]["logic_area_list"])
 
 
+def test_handle_excel_parse_uses_sheet_grouping_llm(tmp_path):
+    path = tmp_path / "grouped.xlsx"
+    make_workbook(path)
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        if prompt_template == "excel_sheet_grouping":
+            return {
+                "logic_page_name": "bill_charge_page",
+                "groups": [{"region_ids": ["region_1"], "reason": "summary fields"}],
+            }
+        return {"target_id": kwargs["target_id"], "summary": "", "confidence": 0.0}
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_grouped",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=fake_generate,
+    )
+
+    assert response["status"] == "success"
+    assert response["payload"]["logic_page_list"][0]["logic_page_name"] == "bill_charge_page"
+    assert response["payload"]["parse_index"]["llm_used"] is True
+    assert response["payload"]["parse_index"]["sheet_grouping_count"] == 2
+
+
+def test_handle_excel_parse_falls_back_when_llm_fails(tmp_path):
+    path = tmp_path / "fallback.xlsx"
+    make_workbook(path)
+
+    def failing_generate(*args, **kwargs):
+        raise RuntimeError("llm offline")
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_fallback",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=failing_generate,
+    )
+
+    assert response["status"] == "success"
+    assert response["payload"]["logic_page_list"][0]["logic_page_name"] == "bill_summary_page"
+    assert response["payload"]["parse_index"]["llm_used"] is False
+    assert "llm offline" in response["payload"]["parse_index"]["llm_fallback_reason"]
+
+
 def test_handle_excel_parse_rejects_wrong_request_type(tmp_path):
     path = tmp_path / "bad.xlsx"
     make_workbook(path)
