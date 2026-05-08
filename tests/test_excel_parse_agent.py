@@ -430,6 +430,37 @@ def test_region_splitter_splits_by_two_consecutive_empty_columns(tmp_path):
     ]
 
 
+def test_region_splitter_splits_row_local_two_empty_column_gap(tmp_path):
+    path = tmp_path / "row_local_empty_cols.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RowGap"
+    ws["A1"] = "Customer"
+    ws["B1"] = "ACME"
+    ws["E1"] = "Item"
+    ws["F1"] = "Amount"
+    ws["A2"] = "Month"
+    ws["B2"] = "2026-05"
+    ws["E2"] = "Compute"
+    ws["F2"] = 100
+    ws["C3"] = "Tax"
+    ws["D3"] = 8
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert [region.cell_range.to_dict() for region in regions] == [
+        {"start_row": 1, "end_row": 2, "start_col": 1, "end_col": 2},
+        {"start_row": 1, "end_row": 2, "start_col": 5, "end_col": 6},
+        {"start_row": 3, "end_row": 3, "start_col": 3, "end_col": 4},
+    ]
+
+
 def test_region_splitter_splits_on_row_density_jump(tmp_path):
     path = tmp_path / "density_jump.xlsx"
     wb = Workbook()

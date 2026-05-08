@@ -38,17 +38,25 @@ class RegionSplitter:
         regions: list[ExcelRegion] = []
         for row_start, row_end in row_segments:
             for col_start, col_end in col_segments:
-                region = cls._region_from_candidate(
+                for sub_row_start, sub_row_end, sub_col_start, sub_col_end in cls._split_candidate_by_row_runs(
                     reader,
-                    sheet_info["sheet_id"],
                     sheet_info["sheet_name"],
                     row_start,
                     row_end,
                     col_start,
                     col_end,
-                )
-                if region is not None:
-                    regions.append(region)
+                ):
+                    region = cls._region_from_candidate(
+                        reader,
+                        sheet_info["sheet_id"],
+                        sheet_info["sheet_name"],
+                        sub_row_start,
+                        sub_row_end,
+                        sub_col_start,
+                        sub_col_end,
+                    )
+                    if region is not None:
+                        regions.append(region)
 
         return regions
 
@@ -110,6 +118,109 @@ class RegionSplitter:
         larger = max(previous, current)
         smaller = min(previous, current)
         return larger >= 4 and larger / smaller >= cls.DENSITY_JUMP_FACTOR
+
+    @classmethod
+    def _split_candidate_by_row_runs(
+        cls,
+        reader: ExcelReader,
+        sheet_name: str,
+        start_row: int,
+        end_row: int,
+        start_col: int,
+        end_col: int,
+    ) -> list[tuple[int, int, int, int]]:
+        components: list[dict[str, int]] = []
+
+        for row_offset, row in enumerate(
+            reader.iter_rows(
+                sheet_name,
+                min_row=start_row,
+                max_row=end_row,
+                min_col=start_col,
+                max_col=end_col,
+            )
+        ):
+            row_index = start_row + row_offset
+            for run_start, run_end in cls._non_empty_col_runs(row, start_col):
+                matching_components = [
+                    component
+                    for component in components
+                    if component["end_row"] == row_index - 1 and cls._col_ranges_overlap(
+                        component["start_col"],
+                        component["end_col"],
+                        run_start,
+                        run_end,
+                    )
+                ]
+                if matching_components:
+                    merged_component = matching_components[0]
+                    merged_component["end_row"] = row_index
+                    merged_component["start_col"] = min(
+                        [run_start] + [component["start_col"] for component in matching_components]
+                    )
+                    merged_component["end_col"] = max(
+                        [run_end] + [component["end_col"] for component in matching_components]
+                    )
+                    for component in matching_components[1:]:
+                        components.remove(component)
+                else:
+                    components.append(
+                        {
+                            "start_row": row_index,
+                            "end_row": row_index,
+                            "start_col": run_start,
+                            "end_col": run_end,
+                        }
+                    )
+
+        if not components:
+            return [(start_row, end_row, start_col, end_col)]
+
+        return [
+            (
+                component["start_row"],
+                component["end_row"],
+                component["start_col"],
+                component["end_col"],
+            )
+            for component in components
+        ]
+
+    @classmethod
+    def _non_empty_col_runs(cls, row: list[Any], start_col: int) -> list[tuple[int, int]]:
+        runs: list[tuple[int, int]] = []
+        run_start: int | None = None
+        last_non_empty: int | None = None
+        empty_run = 0
+
+        for col_offset, value in enumerate(row):
+            col_index = start_col + col_offset
+            if not cls._is_non_empty(value):
+                empty_run += 1
+                if run_start is not None and empty_run >= cls.EMPTY_RUN_BREAK:
+                    runs.append((run_start, last_non_empty or col_index - empty_run))
+                    run_start = None
+                    last_non_empty = None
+                continue
+
+            if run_start is None:
+                run_start = col_index
+            last_non_empty = col_index
+            empty_run = 0
+
+        if run_start is not None and last_non_empty is not None:
+            runs.append((run_start, last_non_empty))
+
+        return runs
+
+    @staticmethod
+    def _col_ranges_overlap(
+        left_start: int,
+        left_end: int,
+        right_start: int,
+        right_end: int,
+    ) -> bool:
+        return left_start <= right_end and right_start <= left_end
 
     @classmethod
     def _region_from_candidate(
