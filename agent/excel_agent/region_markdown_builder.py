@@ -51,10 +51,7 @@ class RegionMarkdownBuilder:
     def _table(header: list[str], body: list[list[str]]) -> str:
         width = max(len(header), *(len(row) for row in body)) if body else len(header)
         padded_header = RegionMarkdownBuilder._pad(header, width)
-        lines = [
-            "| " + " | ".join(padded_header) + " |",
-            "| " + " | ".join("---" for _ in range(width)) + " |",
-        ]
+        lines = ["| " + " | ".join(padded_header) + " |"]
         for row in body:
             lines.append("| " + " | ".join(RegionMarkdownBuilder._pad(row, width)) + " |")
         return "\n".join(lines)

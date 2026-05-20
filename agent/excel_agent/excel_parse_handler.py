@@ -7,7 +7,7 @@ from .excel_reader import ExcelReader
 from .grouping_memory import EmbeddingGenerate, WorkbookGroupingMemory
 from .llm_sheet_grouper import LLMSheetGrouper
 from .logic_builder import LogicBuilder
-from .models import ClassificationDict, ExcelParseRequest, JsonDict
+from .models import ClassificationDict, ExcelParseRequest, JsonDict, RegionGroup, RegionSnapshot, SheetInfoDict
 from .region_markdown_builder import RegionMarkdownBuilder
 from .region_splitter import RegionSplitter
 from .sheet_profiler import SheetProfiler
@@ -33,6 +33,7 @@ def handle_excel_parse(
 
     logic_page_list: list[JsonDict] = []
     logic_area_list: list[JsonDict] = []
+    sheet_content: list[JsonDict] = []
     sheet_profiles: dict[str, JsonDict] = {}
     llm_used = False
     llm_fallback_reasons: list[str] = []
@@ -49,6 +50,7 @@ def handle_excel_parse(
             region_by_id = {}
             classification_by_id = {}
             snapshots = []
+            snapshot_by_id = {}
 
             for index, region in enumerate(regions, start=1):
                 region_id = f"region_{index}"
@@ -60,6 +62,7 @@ def handle_excel_parse(
                 )
                 region_by_id[region_id] = region
                 snapshots.append(snapshot)
+                snapshot_by_id[region_id] = snapshot
 
             visual = visualizer.collect_visual_summaries(
                 file_uri=payload["file_uri"],
@@ -100,6 +103,14 @@ def handle_excel_parse(
                     logic_page_name=grouping.logic_page_name,
                 )
             )
+            sheet_content.append(
+                _build_sheet_content(
+                    sheet_info=sheet_info,
+                    page_type=grouping.logic_page_name,
+                    groups=grouping.groups,
+                    snapshot_by_id=snapshot_by_id,
+                )
+            )
             for group in grouping.groups:
                 logic_area_list.append(
                     LogicBuilder.build_grouped_area(
@@ -117,6 +128,7 @@ def handle_excel_parse(
         "task_id": req["task_id"],
         "status": "success",
         "payload": {
+            "sheet_content": sheet_content,
             "logic_page_list": logic_page_list,
             "logic_area_list": logic_area_list,
             "parse_index": {
@@ -155,3 +167,62 @@ def _validate_request(req: ExcelParseRequest) -> None:
 
     if payload["parse_mode"] != "full":
         raise ValueError("only parse_mode=full is supported")
+
+
+def _build_sheet_content(
+    *,
+    sheet_info: SheetInfoDict,
+    page_type: str,
+    groups: list[RegionGroup],
+    snapshot_by_id: dict[str, RegionSnapshot],
+) -> JsonDict:
+    return {
+        "page_id": sheet_info["sheet_index"] + 1,
+        "page_type": page_type,
+        "blocks": [
+            _build_group_block(group_index=index, group=group, snapshot_by_id=snapshot_by_id)
+            for index, group in enumerate(groups, start=1)
+        ],
+    }
+
+
+def _build_group_block(
+    *,
+    group_index: int,
+    group: RegionGroup,
+    snapshot_by_id: dict[str, RegionSnapshot],
+) -> JsonDict:
+    snapshots = [snapshot_by_id[region_id] for region_id in group.region_ids if region_id in snapshot_by_id]
+    return {
+        "group_id": f"group_{group_index}",
+        "bbox": _build_group_bbox(snapshots),
+        "table_md": _combine_table_markdown(snapshots),
+    }
+
+
+def _build_group_bbox(snapshots: list[RegionSnapshot]) -> JsonDict:
+    if not snapshots:
+        return {"left": 0, "right": 0, "top": 0, "bottom": 0}
+
+    return {
+        "left": min(snapshot.cell_range.start_col for snapshot in snapshots),
+        "right": max(snapshot.cell_range.end_col for snapshot in snapshots),
+        "top": min(snapshot.cell_range.start_row for snapshot in snapshots),
+        "bottom": max(snapshot.cell_range.end_row for snapshot in snapshots),
+    }
+
+
+def _combine_table_markdown(snapshots: list[RegionSnapshot]) -> str:
+    lines: list[str] = []
+    for snapshot in snapshots:
+        for line in snapshot.markdown.splitlines():
+            normalized = line.strip()
+            if not normalized or _is_markdown_separator_row(normalized):
+                continue
+            lines.append(normalized)
+    return "\n".join(lines)
+
+
+def _is_markdown_separator_row(line: str) -> bool:
+    cells = [cell.strip() for cell in line.strip("|").split("|")]
+    return bool(cells) and all(cell and set(cell) <= {"-", ":"} for cell in cells)

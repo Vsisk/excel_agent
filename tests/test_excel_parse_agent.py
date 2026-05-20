@@ -152,6 +152,7 @@ def test_region_markdown_builder_preserves_table_and_truncates():
     )
 
     assert "| Item | Amount |" in snapshot.markdown
+    assert "| --- | --- |" not in snapshot.markdown
     assert "| row-10 | 10 |" in snapshot.markdown
     assert "row-11" not in snapshot.markdown
     assert "truncated after 10 rows" in snapshot.markdown
@@ -757,6 +758,91 @@ def test_handle_excel_parse_uses_sheet_grouping_llm(tmp_path):
     assert response["payload"]["logic_page_list"][0]["logic_page_name"] == "bill_charge_page"
     assert response["payload"]["parse_index"]["llm_used"] is True
     assert response["payload"]["parse_index"]["sheet_grouping_count"] == 2
+
+
+def test_handle_excel_parse_outputs_sheet_content_blocks(tmp_path):
+    path = tmp_path / "sheet_content.xlsx"
+    make_workbook(path)
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        if prompt_template == "excel_sheet_grouping":
+            return {
+                "logic_page_name": "bill_charge_page",
+                "groups": [{"region_ids": ["region_1"], "reason": "sheet block"}],
+            }
+        return {"target_id": kwargs["target_id"], "summary": "", "confidence": 0.0}
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_sheet_content",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=fake_generate,
+    )
+
+    sheet_content = response["payload"]["sheet_content"]
+
+    assert sheet_content[0]["page_id"] == 1
+    assert sheet_content[0]["page_type"] == "bill_charge_page"
+    assert sheet_content[0]["blocks"][0]["group_id"] == "group_1"
+    assert sheet_content[0]["blocks"][0]["bbox"] == {
+        "left": 1,
+        "right": 2,
+        "top": 1,
+        "bottom": 2,
+    }
+    assert "| Invoice | Amount |" in sheet_content[0]["blocks"][0]["table_md"]
+    assert sheet_content[1]["page_id"] == 2
+
+
+def test_handle_excel_parse_combines_group_table_md_as_pipe_rows(tmp_path):
+    path = tmp_path / "combined_table_md.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Combined"
+    ws["A1"] = "Invoice"
+    ws["B1"] = "Amount"
+    ws["A2"] = "INV-001"
+    ws["B2"] = 120
+    ws["A5"] = "Item"
+    ws["B5"] = "Qty"
+    ws["A6"] = "Storage"
+    ws["B6"] = 3
+    wb.save(path)
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        if prompt_template == "excel_sheet_grouping":
+            return {
+                "logic_page_name": "bill_charge_page",
+                "groups": [{"region_ids": ["region_1", "region_2"], "reason": "same block"}],
+            }
+        return {"target_id": kwargs["target_id"], "summary": "", "confidence": 0.0}
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_combined_table_md",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=fake_generate,
+    )
+
+    table_md = response["payload"]["sheet_content"][0]["blocks"][0]["table_md"]
+
+    assert table_md == "\n".join(
+        [
+            "| Invoice | Amount |",
+            "| INV-001 | 120 |",
+            "| Item | Qty |",
+            "| Storage | 3 |",
+        ]
+    )
+    assert "\n\n" not in table_md
 
 
 def test_handle_excel_parse_feeds_global_grouping_memory_to_next_sheet(tmp_path):
