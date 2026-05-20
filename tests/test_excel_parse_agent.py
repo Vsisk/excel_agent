@@ -19,6 +19,7 @@ from agent.excel_agent.models import (
     SheetGrouping,
     gen_id,
 )
+from agent.excel_agent.grouping_memory import WorkbookGroupingMemory
 from agent.excel_agent.region_classifier import RegionClassifier
 from agent.excel_agent.region_markdown_builder import RegionMarkdownBuilder
 from agent.excel_agent.region_splitter import RegionSplitter
@@ -243,6 +244,80 @@ def test_llm_sheet_grouper_falls_back_on_failure():
     assert grouping.groups[0].region_ids == ["region_1"]
     assert "fallback" in grouping.groups[0].reason
     assert grouper.last_fallback_reason == "boom"
+
+
+def test_workbook_grouping_memory_retrieves_global_group_templates():
+    vectors = {
+        "customer amount": [1.0, 0.0],
+        "storage usage": [0.0, 1.0],
+        "current customer amount": [1.0, 0.0],
+    }
+
+    def fake_embedding(text: str) -> list[float]:
+        for key, vector in vectors.items():
+            if key in text:
+                return vector
+        return [0.2, 0.8]
+
+    memory = WorkbookGroupingMemory(embedding_generate=fake_embedding, top_k=1)
+    snapshot = RegionSnapshot(
+        "region_1",
+        "sheet_1",
+        CellRange(1, 2, 1, 2),
+        "customer amount",
+        ["customer amount"],
+        {"logic_area_type": "unknown", "confidence": 1.0},
+        False,
+    )
+    memory.remember_sheet_grouping(
+        sheet_info={
+            "sheet_id": "sheet_1",
+            "sheet_name": "Summary",
+            "sheet_index": 0,
+            "max_row": 2,
+            "max_col": 2,
+            "merged_cells": [],
+        },
+        region_snapshots=[snapshot],
+        visual_summaries=[],
+        grouping=SheetGrouping(
+            logic_page_name="bill_summary_page",
+            groups=[RegionGroup(region_ids=["region_1"], reason="customer amount group")],
+        ),
+    )
+
+    matches = memory.retrieve_for_sheet(
+        sheet_info={
+            "sheet_id": "sheet_2",
+            "sheet_name": "Next",
+            "sheet_index": 1,
+            "max_row": 2,
+            "max_col": 2,
+            "merged_cells": [],
+        },
+        region_snapshots=[
+            RegionSnapshot(
+                "region_1",
+                "sheet_2",
+                CellRange(1, 2, 1, 2),
+                "current customer amount",
+                ["current customer amount"],
+                {"logic_area_type": "unknown", "confidence": 1.0},
+                False,
+            )
+        ],
+        visual_summaries=[],
+    )
+
+    assert matches == [
+        {
+            "template_id": "template_1",
+            "similarity": 1.0,
+            "support_count": 1,
+            "sample_sheet_names": ["Summary"],
+            "template_preview": "customer amount group | regions=1 | customer amount",
+        }
+    ]
 
 
 def test_visualizer_calls_vl_for_low_confidence_region():
@@ -682,6 +757,48 @@ def test_handle_excel_parse_uses_sheet_grouping_llm(tmp_path):
     assert response["payload"]["logic_page_list"][0]["logic_page_name"] == "bill_charge_page"
     assert response["payload"]["parse_index"]["llm_used"] is True
     assert response["payload"]["parse_index"]["sheet_grouping_count"] == 2
+
+
+def test_handle_excel_parse_feeds_global_grouping_memory_to_next_sheet(tmp_path):
+    path = tmp_path / "memory.xlsx"
+    make_workbook(path)
+    grouping_payloads = []
+
+    def fake_generate(prompt_template, llm_name="base", lang="zh", **kwargs):
+        if prompt_template == "excel_sheet_grouping":
+            grouping_payloads.append(kwargs["sheet_payload"])
+            return {
+                "logic_page_name": "bill_summary_page",
+                "groups": [{"region_ids": ["region_1"], "reason": "invoice amount block"}],
+            }
+        return {"target_id": kwargs["target_id"], "summary": "", "confidence": 0.0}
+
+    def fake_embedding(text: str) -> list[float]:
+        if "Invoice" in text or "Amount" in text:
+            return [1.0, 0.0]
+        return [0.9, 0.1]
+
+    response = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_memory",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {"excel_instance_id": "excel_1", "file_uri": str(path), "parse_mode": "full"},
+        },
+        llm_generate=fake_generate,
+        embedding_generate=fake_embedding,
+    )
+
+    assert response["status"] == "success"
+    assert '"grouping_memory_matches": []' in grouping_payloads[0]
+    assert '"template_id": "template_1"' in grouping_payloads[1]
+    parse_index = response["payload"]["parse_index"]
+    assert parse_index["grouping_memory_enabled"] is True
+    assert parse_index["grouping_memory_used"] is True
+    assert parse_index["grouping_memory_template_count"] == 1
+    assert parse_index["grouping_memory_matches"][1]["matches"][0]["template_id"] == "template_1"
+    assert parse_index["memory_consistency_warnings"] == []
 
 
 def test_handle_excel_parse_falls_back_when_llm_fails(tmp_path):
