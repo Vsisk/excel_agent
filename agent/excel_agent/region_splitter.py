@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from openpyxl.utils.cell import range_boundaries
+
 from .excel_reader import ExcelReader
 from .models import CellRange, ExcelRegion, SheetInfoDict, SheetProfile
 
@@ -58,7 +60,13 @@ class RegionSplitter:
                     if region is not None:
                         regions.append(region)
 
-        return regions
+        return cls._fix_trailing_summary_regions(
+            reader,
+            sheet_info["sheet_id"],
+            sheet_info["sheet_name"],
+            sheet_info["merged_cells"],
+            regions,
+        )
 
     @classmethod
     def _split_axis_by_empty_runs(
@@ -141,7 +149,8 @@ class RegionSplitter:
             )
         ):
             row_index = start_row + row_offset
-            for run_start, run_end in cls._non_empty_col_runs(row, start_col):
+            runs = cls._non_empty_col_runs(row, start_col)
+            for run_start, run_end in runs:
                 matching_components = [
                     component
                     for component in components
@@ -306,6 +315,96 @@ class RegionSplitter:
             if values:
                 lines.append(" ".join(values))
         return lines
+
+    @classmethod
+    def _fix_trailing_summary_regions(
+        cls,
+        reader: ExcelReader,
+        sheet_id: str,
+        sheet_name: str,
+        merged_cells: list[str],
+        regions: list[ExcelRegion],
+    ) -> list[ExcelRegion]:
+        if len(regions) < 2:
+            return regions
+
+        final_row = max(region.cell_range.end_row for region in regions)
+        final_row_merges = cls._merged_ranges_on_row(merged_cells, final_row)
+        continued = [
+            region
+            for region in regions
+            if region.cell_range.start_row < final_row
+            and region.cell_range.end_row == final_row
+            and cls._region_matches_trailing_merge(region, final_row_merges)
+        ]
+        row_only = [
+            region
+            for region in regions
+            if region.cell_range.start_row == final_row and region.cell_range.end_row == final_row
+        ]
+        if not continued or not row_only:
+            return regions
+
+        adjusted: list[ExcelRegion] = []
+        for region in regions:
+            if region in row_only:
+                continue
+            if region in continued:
+                trimmed = cls._region_from_candidate(
+                    reader,
+                    sheet_id,
+                    sheet_name,
+                    region.cell_range.start_row,
+                    final_row - 1,
+                    region.cell_range.start_col,
+                    region.cell_range.end_col,
+                )
+                if trimmed is not None:
+                    adjusted.append(trimmed)
+                continue
+            adjusted.append(region)
+
+        summary_start_col = min(region.cell_range.start_col for region in [*continued, *row_only])
+        summary_end_col = max(region.cell_range.end_col for region in [*continued, *row_only])
+        summary = cls._region_from_candidate(
+            reader,
+            sheet_id,
+            sheet_name,
+            final_row,
+            final_row,
+            summary_start_col,
+            summary_end_col,
+        )
+        if summary is not None:
+            adjusted.append(summary)
+        return adjusted
+
+    @classmethod
+    def _region_matches_trailing_merge(
+        cls,
+        region: ExcelRegion,
+        final_row_merges: list[tuple[int, int]],
+    ) -> bool:
+        if not final_row_merges:
+            return True
+        return any(
+            cls._col_ranges_overlap(
+                region.cell_range.start_col,
+                region.cell_range.end_col,
+                merge_start_col,
+                merge_end_col,
+            )
+            for merge_start_col, merge_end_col in final_row_merges
+        )
+
+    @staticmethod
+    def _merged_ranges_on_row(merged_cells: list[str], row_index: int) -> list[tuple[int, int]]:
+        ranges: list[tuple[int, int]] = []
+        for merged_range in merged_cells:
+            min_col, min_row, max_col, max_row = range_boundaries(merged_range)
+            if min_row <= row_index <= max_row:
+                ranges.append((min_col, max_col))
+        return ranges
 
     @staticmethod
     def _is_non_empty(value: Any) -> bool:

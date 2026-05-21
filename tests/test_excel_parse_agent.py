@@ -160,6 +160,45 @@ def test_region_markdown_builder_preserves_table_and_truncates():
     assert snapshot.rule_classification == {"logic_area_type": "unknown", "confidence": 1.0}
 
 
+def test_excel_pipeline_preserves_low_resource_language_text(tmp_path):
+    path = tmp_path / "unicode_languages.xlsx"
+    thai_customer = "\u0e25\u0e39\u0e01\u0e04\u0e49\u0e32"
+    thai_test = "\u0e17\u0e14\u0e2a\u0e2d\u0e1a"
+    arabic_amount = "\u0627\u0644\u0645\u0628\u0644\u063a"
+    arabic_hello = "\u0645\u0631\u062d\u0628\u0627"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Unicode"
+    ws["A1"] = thai_customer
+    ws["B1"] = arabic_amount
+    ws["A2"] = thai_test
+    ws["B2"] = arabic_hello
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    rows = reader.read_range(sheet_info["sheet_name"], CellRange(1, 2, 1, 2))
+    profile = SheetProfiler.profile(reader, sheet_info)
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    snapshot = RegionMarkdownBuilder.build_region_snapshot(
+        region_id="region_1",
+        region=regions[0],
+        rows=reader.read_range(sheet_info["sheet_name"], regions[0].cell_range),
+    )
+    reader.close()
+
+    assert rows == [[thai_customer, arabic_amount], [thai_test, arabic_hello]]
+    assert regions[0].raw_text == [
+        f"{thai_customer} {arabic_amount}",
+        f"{thai_test} {arabic_hello}",
+    ]
+    assert snapshot.markdown == (
+        f"| {thai_customer} | {arabic_amount} |\n"
+        f"| {thai_test} | {arabic_hello} |"
+    )
+
+
 def test_llm_sheet_grouper_validates_groups_and_page_name():
     calls = []
 
@@ -535,6 +574,40 @@ def test_region_splitter_splits_row_local_two_empty_column_gap(tmp_path):
         {"start_row": 1, "end_row": 2, "start_col": 5, "end_col": 6},
         {"start_row": 3, "end_row": 3, "start_col": 3, "end_col": 4},
     ]
+
+
+def test_region_splitter_keeps_trailing_merged_summary_row_together(tmp_path):
+    path = tmp_path / "merged_summary.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws["A1"] = "Item"
+    ws["B1"] = "Qty"
+    ws["C1"] = "Amount"
+    ws["A2"] = "Compute"
+    ws["B2"] = 2
+    ws["C2"] = 100
+    ws["A3"] = "Storage"
+    ws["B3"] = 3
+    ws["C3"] = 240
+    ws.merge_cells("A4:C4")
+    ws["A4"] = "Grand total"
+    ws["F4"] = 5
+    ws["G4"] = 340
+    wb.save(path)
+
+    reader = ExcelReader(str(path))
+    sheet_info = reader.read()["sheet_list"][0]
+    profile = SheetProfiler.profile(reader, sheet_info)
+
+    regions = RegionSplitter.split(reader, sheet_info, profile)
+    reader.close()
+
+    assert [region.cell_range.to_dict() for region in regions] == [
+        {"start_row": 1, "end_row": 3, "start_col": 1, "end_col": 3},
+        {"start_row": 4, "end_row": 4, "start_col": 1, "end_col": 7},
+    ]
+    assert regions[1].raw_text == ["Grand total 5 340"]
 
 
 def test_region_splitter_splits_on_row_density_jump(tmp_path):
