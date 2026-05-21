@@ -1,4 +1,5 @@
 import re
+import json
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from agent.excel_agent.region_classifier import RegionClassifier
 from agent.excel_agent.region_markdown_builder import RegionMarkdownBuilder
 from agent.excel_agent.region_splitter import RegionSplitter
 from agent.excel_agent.sheet_profiler import SheetProfiler
+from agent.excel_agent.table_markdown_extractor import get_table_md_by_cell, get_table_md_by_bbox
 
 
 def test_gen_id_uses_date_and_eight_digits():
@@ -140,6 +142,84 @@ def test_excel_reader_reads_only_requested_range(tmp_path):
     assert rows == [["Invoice", "Amount"], ["INV-001", 120]]
 
 
+def test_get_table_md_by_cell_returns_region_markdown(tmp_path):
+    path = tmp_path / "cell_table_md.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tables"
+    ws["A1"] = "Invoice"
+    ws["B1"] = "Amount"
+    ws["A2"] = "INV-001"
+    ws["B2"] = 120
+    ws["A5"] = "Item"
+    ws["B5"] = "Qty"
+    ws["A6"] = "Storage"
+    ws["B6"] = 3
+    wb.save(path)
+
+    table_md = get_table_md_by_cell(str(path), sheet_number=1, cell_coordinate="B6")
+
+    assert table_md == "| Item | Qty |\n| Storage | 3 |"
+
+
+def test_get_table_md_by_cell_accepts_row_col_tuple_and_empty_cell(tmp_path):
+    path = tmp_path / "cell_tuple.xlsx"
+    make_workbook(path)
+
+    table_md = get_table_md_by_cell(str(path), sheet_number=1, cell_coordinate=(2, 1))
+    empty_table_md = get_table_md_by_cell(str(path), sheet_number=1, cell_coordinate="D10")
+
+    assert table_md == "| Invoice | Amount |\n| INV-001 | 120 |"
+    assert empty_table_md == ""
+
+
+def test_get_table_md_by_bbox_returns_intersecting_region_markdown(tmp_path):
+    path = tmp_path / "bbox_table_md.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tables"
+    ws["A1"] = "Invoice"
+    ws["B1"] = "Amount"
+    ws["A2"] = "INV-001"
+    ws["B2"] = 120
+    ws["A5"] = "Item"
+    ws["B5"] = "Qty"
+    ws["A6"] = "Storage"
+    ws["B6"] = 3
+    wb.save(path)
+
+    table_md = get_table_md_by_bbox(str(path), sheet_number=1, bbox=[1, 5, 2, 6])
+
+    assert table_md == "| Item | Qty |\n| Storage | 3 |"
+
+
+def test_get_table_md_by_bbox_combines_multiple_intersecting_regions(tmp_path):
+    path = tmp_path / "bbox_multi_region.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tables"
+    ws["A1"] = "Invoice"
+    ws["B1"] = "Amount"
+    ws["A2"] = "INV-001"
+    ws["B2"] = 120
+    ws["E1"] = "Item"
+    ws["F1"] = "Qty"
+    ws["E2"] = "Storage"
+    ws["F2"] = 3
+    wb.save(path)
+
+    table_md = get_table_md_by_bbox(str(path), sheet_number=1, bbox=[1, 1, 6, 2])
+
+    assert table_md == "\n".join(
+        [
+            "| Invoice | Amount |",
+            "| INV-001 | 120 |",
+            "| Item | Qty |",
+            "| Storage | 3 |",
+        ]
+    )
+
+
 def test_region_markdown_builder_preserves_table_and_truncates():
     region = ExcelRegion("sheet_1", CellRange(1, 13, 1, 2), raw_text=[])
     rows = [["Item", "Amount"]] + [[f"row-{i}", i] for i in range(1, 13)]
@@ -248,6 +328,15 @@ def test_llm_sheet_grouper_validates_groups_and_page_name():
     assert [group.region_ids for group in grouping.groups] == [["region_1"], ["region_2"]]
     assert calls[0][0] == "excel_sheet_grouping"
     assert calls[0][1] == "base"
+    sheet_payload = json.loads(calls[0][2]["sheet_payload"])
+    assert "merge" in sheet_payload["grouping_task"].lower()
+    assert sheet_payload["regions"][0]["bbox"] == {
+        "left": 1,
+        "right": 2,
+        "top": 1,
+        "bottom": 2,
+    }
+    assert sheet_payload["regions"][0]["table_md"] == "r1"
 
 
 def test_llm_sheet_grouper_falls_back_on_failure():

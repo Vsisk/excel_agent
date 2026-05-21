@@ -82,12 +82,22 @@ class LLMSheetGrouper:
                 "sheet_name": sheet_info["sheet_name"],
                 "sheet_index": sheet_info["sheet_index"],
             },
+            "grouping_task": (
+                "Merge rule-split regions that are fragments of the same logical table or section. "
+                "Regions can be split by layout gaps, merged cells, page formatting, or visual spacing. "
+                "Return groups of region_id values in reading order; keep unrelated tables separate."
+            ),
             "allowed_logic_page_names": list(ALLOWED_LOGIC_PAGE_NAMES),
             "regions": [
                 {
                     "region_id": snapshot.region_id,
-                    "cell_range": snapshot.cell_range.to_dict(),
-                    "markdown": snapshot.markdown,
+                    "bbox": {
+                        "left": snapshot.cell_range.start_col,
+                        "right": snapshot.cell_range.end_col,
+                        "top": snapshot.cell_range.start_row,
+                        "bottom": snapshot.cell_range.end_row,
+                    },
+                    "table_md": snapshot.markdown,
                     "truncated": snapshot.truncated,
                 }
                 for snapshot in region_snapshots
