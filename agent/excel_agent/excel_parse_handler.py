@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .excel_visualizer import ExcelVisualizer
 from .excel_reader import ExcelReader
 from .grouping_memory import EmbeddingGenerate, WorkbookGroupingMemory
 from .llm_sheet_grouper import LLMSheetGrouper
-from .logic_builder import LogicBuilder
 from .models import ClassificationDict, ExcelParseRequest, JsonDict, RegionGroup, RegionSnapshot, SheetInfoDict
 from .region_markdown_builder import RegionMarkdownBuilder
 from .region_splitter import RegionSplitter
@@ -22,24 +20,17 @@ def handle_excel_parse(
     *,
     llm_generate: LLMGenerate | None = None,
     embedding_generate: EmbeddingGenerate | None = None,
-) -> JsonDict:
+) -> list[dict[str, Any]]:
     _validate_request(req)
     payload = req["payload"]
-    excel_instance_id = payload["excel_instance_id"]
     reader = ExcelReader(payload["file_uri"])
     grouper = LLMSheetGrouper(llm_generate=llm_generate) if llm_generate else LLMSheetGrouper()
-    visualizer = ExcelVisualizer(llm_generate=llm_generate) if llm_generate else ExcelVisualizer()
     grouping_memory = WorkbookGroupingMemory(embedding_generate=embedding_generate)
 
-    logic_page_list: list[JsonDict] = []
-    logic_area_list: list[JsonDict] = []
     sheet_content: list[JsonDict] = []
     sheet_profiles: dict[str, JsonDict] = {}
     llm_used = False
-    llm_fallback_reasons: list[str] = []
     sheet_grouping_count = 0
-    visual_review_count = 0
-    visual_review_skipped: list[JsonDict] = []
 
     try:
         workbook = reader.read()
@@ -48,7 +39,6 @@ def handle_excel_parse(
             sheet_profiles[sheet_info["sheet_id"]] = profile.to_dict()
             regions = RegionSplitter.split(reader, sheet_info, profile)
             region_by_id = {}
-            classification_by_id = {}
             snapshots = []
             snapshot_by_id = {}
 
@@ -64,45 +54,28 @@ def handle_excel_parse(
                 snapshots.append(snapshot)
                 snapshot_by_id[region_id] = snapshot
 
-            visual = visualizer.collect_visual_summaries(
-                file_uri=payload["file_uri"],
-                sheet_info=sheet_info,
-                region_snapshots=snapshots,
-            )
-            visual_review_count += len(visual["summaries"])
-            visual_review_skipped.extend(visual["skipped"])
-
+            visual_summaries: list[JsonDict] = []
             memory_matches = grouping_memory.retrieve_for_sheet(
                 sheet_info=sheet_info,
                 region_snapshots=snapshots,
-                visual_summaries=visual["summaries"],
+                visual_summaries=visual_summaries,
             )
             grouping_memory.record_sheet_matches(sheet_info, memory_matches)
             grouping = grouper.group_sheet(
                 sheet_info=sheet_info,
                 region_snapshots=snapshots,
-                visual_summaries=visual["summaries"],
                 grouping_memory_matches=memory_matches,
             )
             sheet_grouping_count += 1
             llm_used = llm_used or grouper.last_llm_used
-            if grouper.last_fallback_reason:
-                llm_fallback_reasons.append(grouper.last_fallback_reason)
             grouping_memory.record_consistency_warnings(sheet_info, memory_matches, grouping)
             grouping_memory.remember_sheet_grouping(
                 sheet_info=sheet_info,
                 region_snapshots=snapshots,
-                visual_summaries=visual["summaries"],
+                visual_summaries=visual_summaries,
                 grouping=grouping,
             )
 
-            logic_page_list.append(
-                LogicBuilder.build_page(
-                    excel_instance_id,
-                    sheet_info,
-                    logic_page_name=grouping.logic_page_name,
-                )
-            )
             sheet_content.append(
                 _build_sheet_content(
                     sheet_info=sheet_info,
@@ -111,46 +84,12 @@ def handle_excel_parse(
                     snapshot_by_id=snapshot_by_id,
                 )
             )
-            for group in grouping.groups:
-                logic_area_list.append(
-                    LogicBuilder.build_grouped_area(
-                        excel_instance_id,
-                        sheet_info,
-                        group=group,
-                        region_by_id=region_by_id
-                    )
-                )
+        return sheet_content
+
     finally:
         reader.close()
 
-    return {
-        "request_type": "EXCEL_PARSE_RESULT",
-        "task_id": req["task_id"],
-        "status": "success",
-        "payload": {
-            "sheet_content": sheet_content,
-            "logic_page_list": logic_page_list,
-            "logic_area_list": logic_area_list,
-            "parse_index": {
-                "excel_instance_id": excel_instance_id,
-                "sheet_count": len(logic_page_list),
-                "area_count": len(logic_area_list),
-                "sheet_profiles": sheet_profiles,
-                "llm_enabled": True,
-                "llm_used": llm_used,
-                "llm_fallback_reason": "; ".join(llm_fallback_reasons) if llm_fallback_reasons else None,
-                "sheet_grouping_count": sheet_grouping_count,
-                "visual_review_count": visual_review_count,
-                "visual_review_skipped": visual_review_skipped,
-                "grouping_memory_enabled": grouping_memory.enabled,
-                "grouping_memory_used": grouping_memory.used,
-                "grouping_memory_fallback_reason": grouping_memory.fallback_reason,
-                "grouping_memory_template_count": grouping_memory.template_count,
-                "grouping_memory_matches": grouping_memory.matches_by_sheet,
-                "memory_consistency_warnings": grouping_memory.warnings,
-            },
-        },
-    }
+
 
 
 def _validate_request(req: ExcelParseRequest) -> None:

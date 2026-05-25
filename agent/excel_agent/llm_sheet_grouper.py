@@ -34,7 +34,6 @@ class LLMSheetGrouper:
         *,
         sheet_info: SheetInfoDict,
         region_snapshots: list[RegionSnapshot],
-        visual_summaries: list[dict[str, Any]],
         grouping_memory_matches: list[dict[str, Any]] | None = None,
     ) -> SheetGrouping:
         self.last_fallback_reason = None
@@ -43,7 +42,6 @@ class LLMSheetGrouper:
             payload = self._payload(
                 sheet_info,
                 region_snapshots,
-                visual_summaries,
                 grouping_memory_matches or [],
             )
             response = self.llm_generate(
@@ -73,7 +71,6 @@ class LLMSheetGrouper:
     def _payload(
         sheet_info: SheetInfoDict,
         region_snapshots: list[RegionSnapshot],
-        visual_summaries: list[dict[str, Any]],
         grouping_memory_matches: list[dict[str, Any]],
     ) -> dict[str, Any]:
         return {
@@ -102,7 +99,6 @@ class LLMSheetGrouper:
                 }
                 for snapshot in region_snapshots
             ],
-            "visual_summaries": visual_summaries,
             "grouping_memory_matches": grouping_memory_matches,
         }
 
