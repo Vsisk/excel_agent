@@ -97,14 +97,14 @@ def test_handle_excel_parse_main_path_returns_sheet_content_for_each_sheet(tmp_p
     assert sheet_content[0]["blocks"] == [
         {
             "group_id": "group_1",
-            "bbox": {"left": 1, "right": 2, "top": 1, "bottom": 2},
+            "bbox": {"left": 0, "right": 2, "top": 0, "bottom": 2},
             "table_md": "| Invoice | Amount |\n| INV-001 | 120 |",
         }
     ]
     assert sheet_content[1]["blocks"] == [
         {
             "group_id": "group_1",
-            "bbox": {"left": 1, "right": 3, "top": 1, "bottom": 2},
+            "bbox": {"left": 0, "right": 3, "top": 0, "bottom": 2},
             "table_md": "| Item | Qty | Total |\n| Storage | 3 | 360 |",
         }
     ]
@@ -112,8 +112,73 @@ def test_handle_excel_parse_main_path_returns_sheet_content_for_each_sheet(tmp_p
     assert [call[0] for call in llm_calls] == ["excel_sheet_grouping", "excel_sheet_grouping"]
     assert all(call[1] == "base" and call[2] == "zh" for call in llm_calls)
     assert llm_calls[0][3]["sheet"]["sheet_name"] == "Summary"
+    assert llm_calls[0][3]["regions"][0]["bbox"] == {"left": 0, "right": 2, "top": 0, "bottom": 2}
     assert llm_calls[0][3]["regions"][0]["table_md"] == "| Invoice | Amount |\n| INV-001 | 120 |"
     assert llm_calls[1][3]["sheet"]["sheet_name"] == "Charges"
+
+
+def test_handle_excel_parse_outputs_single_row_bbox_as_half_open_zero_based_range(tmp_path):
+    path = tmp_path / "single_row.xlsx"
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "SingleRow"
+    sheet["A1"] = "Item"
+    sheet["B1"] = "Qty"
+    sheet["C1"] = "Total"
+    wb.save(path)
+
+    sheet_content = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_single_row",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {
+                "excel_instance_id": "excel_1",
+                "file_uri": str(path),
+                "parse_mode": "full",
+            },
+        },
+        llm_generate=lambda *args, **kwargs: {
+            "logic_page_name": "bill_charge_page",
+            "groups": [{"region_ids": ["region_1"], "reason": "single row"}],
+        },
+        embedding_generate=lambda text: [1.0, 0.0],
+    )
+
+    assert sheet_content[0]["blocks"][0]["bbox"] == {"left": 0, "right": 3, "top": 0, "bottom": 1}
+
+
+def test_handle_excel_parse_outputs_single_column_bbox_as_half_open_zero_based_range(tmp_path):
+    path = tmp_path / "single_col.xlsx"
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "SingleCol"
+    sheet["A1"] = "Item"
+    sheet["A2"] = "Storage"
+    sheet["A3"] = "Compute"
+    wb.save(path)
+
+    sheet_content = handle_excel_parse(
+        {
+            "request_type": "EXCEL_PARSE",
+            "task_id": "task_single_col",
+            "site_id": "site_1",
+            "project_id": "project_1",
+            "payload": {
+                "excel_instance_id": "excel_1",
+                "file_uri": str(path),
+                "parse_mode": "full",
+            },
+        },
+        llm_generate=lambda *args, **kwargs: {
+            "logic_page_name": "bill_charge_page",
+            "groups": [{"region_ids": ["region_1"], "reason": "single col"}],
+        },
+        embedding_generate=lambda text: [1.0, 0.0],
+    )
+
+    assert sheet_content[0]["blocks"][0]["bbox"] == {"left": 0, "right": 1, "top": 0, "bottom": 3}
 
 
 def test_handle_excel_parse_main_path_keeps_empty_sheet_as_empty_page(tmp_path):

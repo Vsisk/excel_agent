@@ -80,6 +80,14 @@ class CellRange:
             "end_col": self.end_col,
         }
 
+    def to_zero_based_half_open_dict(self) -> UsedRange:
+        return {
+            "start_row": max(0, self.start_row - 1),
+            "end_row": self.end_row,
+            "start_col": max(0, self.start_col - 1),
+            "end_col": self.end_col,
+        }
+
 
 @dataclass(frozen=True)
 class SheetInfo:

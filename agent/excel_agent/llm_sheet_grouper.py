@@ -86,20 +86,25 @@ class LLMSheetGrouper:
             ),
             "allowed_logic_page_names": list(ALLOWED_LOGIC_PAGE_NAMES),
             "regions": [
-                {
-                    "region_id": snapshot.region_id,
-                    "bbox": {
-                        "left": snapshot.cell_range.start_col,
-                        "right": snapshot.cell_range.end_col,
-                        "top": snapshot.cell_range.start_row,
-                        "bottom": snapshot.cell_range.end_row,
-                    },
-                    "table_md": snapshot.markdown,
-                    "truncated": snapshot.truncated,
-                }
+                LLMSheetGrouper._region_payload(snapshot)
                 for snapshot in region_snapshots
             ],
             "grouping_memory_matches": grouping_memory_matches,
+        }
+
+    @staticmethod
+    def _region_payload(snapshot: RegionSnapshot) -> dict[str, Any]:
+        output_range = snapshot.cell_range.to_zero_based_half_open_dict()
+        return {
+            "region_id": snapshot.region_id,
+            "bbox": {
+                "left": output_range["start_col"],
+                "right": output_range["end_col"],
+                "top": output_range["start_row"],
+                "bottom": output_range["end_row"],
+            },
+            "table_md": snapshot.markdown,
+            "truncated": snapshot.truncated,
         }
 
     @staticmethod

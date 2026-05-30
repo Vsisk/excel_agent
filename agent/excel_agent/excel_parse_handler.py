@@ -5,7 +5,7 @@ from typing import Any, Callable
 from .excel_reader import ExcelReader
 from .grouping_memory import EmbeddingGenerate, WorkbookGroupingMemory
 from .llm_sheet_grouper import LLMSheetGrouper
-from .models import ClassificationDict, ExcelParseRequest, JsonDict, RegionGroup, RegionSnapshot, SheetInfoDict
+from .models import CellRange, ClassificationDict, ExcelParseRequest, JsonDict, RegionGroup, RegionSnapshot, SheetInfoDict
 from .region_markdown_builder import RegionMarkdownBuilder
 from .region_splitter import RegionSplitter
 from .sheet_profiler import SheetProfiler
@@ -143,11 +143,18 @@ def _build_group_bbox(snapshots: list[RegionSnapshot]) -> JsonDict:
     if not snapshots:
         return {"left": 0, "right": 0, "top": 0, "bottom": 0}
 
+    cell_range = CellRange(
+        start_row=min(snapshot.cell_range.start_row for snapshot in snapshots),
+        end_row=max(snapshot.cell_range.end_row for snapshot in snapshots),
+        start_col=min(snapshot.cell_range.start_col for snapshot in snapshots),
+        end_col=max(snapshot.cell_range.end_col for snapshot in snapshots),
+    )
+    output_range = cell_range.to_zero_based_half_open_dict()
     return {
-        "left": min(snapshot.cell_range.start_col for snapshot in snapshots),
-        "right": max(snapshot.cell_range.end_col for snapshot in snapshots),
-        "top": min(snapshot.cell_range.start_row for snapshot in snapshots),
-        "bottom": max(snapshot.cell_range.end_row for snapshot in snapshots),
+        "left": output_range["start_col"],
+        "right": output_range["end_col"],
+        "top": output_range["start_row"],
+        "bottom": output_range["end_row"],
     }
 
 
