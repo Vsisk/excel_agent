@@ -13,6 +13,7 @@ from .sheet_profiler import SheetProfiler
 
 CellCoordinate = str | tuple[int, int]
 BBox = list[int] | tuple[int, int, int, int]
+OutputCellRange = dict[str, int]
 
 
 def get_table_md_by_cell(
@@ -70,6 +71,34 @@ def get_table_md_by_bbox(
         reader.close()
 
 
+def get_table_md_by_cell_range(
+    file_path: str,
+    *,
+    sheet_number: int,
+    cell_range: OutputCellRange,
+) -> str:
+    """Return markdown for an exact 0-based half-open output cell range.
+
+    Accepted shapes:
+    - {"start_row": 0, "end_row": 2, "start_col": 0, "end_col": 2}
+    - {"left": 0, "right": 2, "top": 0, "bottom": 2}
+    """
+    target_range = _normalize_output_cell_range(cell_range)
+    reader = ExcelReader(file_path)
+    try:
+        workbook = reader.read()
+        sheet_info = _sheet_by_number(workbook["sheet_list"], sheet_number)
+        rows = reader.read_range(sheet_info["sheet_name"], target_range)
+        snapshot = RegionMarkdownBuilder.build_region_snapshot(
+            region_id="range_1",
+            region=ExcelRegion(sheet_info["sheet_id"], target_range, raw_text=[]),
+            rows=rows,
+        )
+        return snapshot.markdown
+    finally:
+        reader.close()
+
+
 def _normalize_cell_coordinate(cell_coordinate: CellCoordinate) -> tuple[int, int]:
     if isinstance(cell_coordinate, str):
         return coordinate_to_tuple(cell_coordinate)
@@ -85,6 +114,38 @@ def _normalize_cell_coordinate(cell_coordinate: CellCoordinate) -> tuple[int, in
         return row, col
 
     raise ValueError("cell_coordinate must be A1 notation or a (row, column) tuple")
+
+
+def _normalize_output_cell_range(cell_range: OutputCellRange) -> CellRange:
+    if not isinstance(cell_range, dict):
+        raise ValueError("cell_range must be a dict")
+
+    if {"start_row", "end_row", "start_col", "end_col"} <= set(cell_range):
+        start_row = cell_range["start_row"]
+        end_row = cell_range["end_row"]
+        start_col = cell_range["start_col"]
+        end_col = cell_range["end_col"]
+    elif {"left", "right", "top", "bottom"} <= set(cell_range):
+        start_row = cell_range["top"]
+        end_row = cell_range["bottom"]
+        start_col = cell_range["left"]
+        end_col = cell_range["right"]
+    else:
+        raise ValueError(
+            "cell_range must contain start_row/end_row/start_col/end_col or left/right/top/bottom"
+        )
+
+    if not all(isinstance(value, int) for value in [start_row, end_row, start_col, end_col]):
+        raise ValueError("cell_range values must be integers")
+    if start_row < 0 or start_col < 0 or end_row <= start_row or end_col <= start_col:
+        raise ValueError("cell_range must be 0-based half-open coordinates with positive width and height")
+
+    return CellRange(
+        start_row=start_row + 1,
+        end_row=end_row,
+        start_col=start_col + 1,
+        end_col=end_col,
+    )
 
 
 def _normalize_bbox(bbox: BBox) -> CellRange:
