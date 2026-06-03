@@ -28,10 +28,10 @@ def get_table_md_by_cell(
     "B6", or a (row, column) tuple using 1-based indexes.
     """
     row, col = _normalize_cell_coordinate(cell_coordinate)
-    return get_table_md_by_bbox(
+    return _get_rule_split_region_md_by_range(
         file_path,
         sheet_number=sheet_number,
-        bbox=[col, row, col, row],
+        target_range=CellRange(start_row=row, end_row=row, start_col=col, end_col=col),
     )
 
 
@@ -41,7 +41,7 @@ def get_table_md_by_bbox(
     sheet_number: int,
     bbox: BBox,
 ) -> str:
-    """Return table markdown for rule-split regions intersecting a bbox.
+    """Return table markdown for the exact requested bbox.
 
     bbox order is [left, top, right, bottom], using 1-based Excel column and row
     indexes.
@@ -51,22 +51,13 @@ def get_table_md_by_bbox(
     try:
         workbook = reader.read()
         sheet_info = _sheet_by_number(workbook["sheet_list"], sheet_number)
-        profile = SheetProfiler.profile(reader, sheet_info)
-        regions = RegionSplitter.split(reader, sheet_info, profile)
-        matched_regions = _find_regions_intersecting_range(regions, target_range)
-        if not matched_regions:
-            return ""
-
-        markdown_parts = []
-        for index, region in enumerate(matched_regions, start=1):
-            rows = reader.read_range(sheet_info["sheet_name"], region.cell_range)
-            snapshot = RegionMarkdownBuilder.build_region_snapshot(
-                region_id=f"region_{index}",
-                region=region,
-                rows=rows,
-            )
-            markdown_parts.append(snapshot.markdown)
-        return "\n".join(part for part in markdown_parts if part)
+        rows = reader.read_range(sheet_info["sheet_name"], target_range)
+        snapshot = RegionMarkdownBuilder.build_region_snapshot(
+            region_id="bbox_1",
+            region=ExcelRegion(sheet_info["sheet_id"], target_range, raw_text=[]),
+            rows=rows,
+        )
+        return snapshot.markdown
     finally:
         reader.close()
 
@@ -163,6 +154,36 @@ def _sheet_by_number(sheet_list: list[dict[str, Any]], sheet_number: int) -> dic
     if sheet_number < 1 or sheet_number > len(sheet_list):
         raise ValueError(f"sheet_number must be between 1 and {len(sheet_list)}")
     return sheet_list[sheet_number - 1]
+
+
+def _get_rule_split_region_md_by_range(
+    file_path: str,
+    *,
+    sheet_number: int,
+    target_range: CellRange,
+) -> str:
+    reader = ExcelReader(file_path)
+    try:
+        workbook = reader.read()
+        sheet_info = _sheet_by_number(workbook["sheet_list"], sheet_number)
+        profile = SheetProfiler.profile(reader, sheet_info)
+        regions = RegionSplitter.split(reader, sheet_info, profile)
+        matched_regions = _find_regions_intersecting_range(regions, target_range)
+        if not matched_regions:
+            return ""
+
+        markdown_parts = []
+        for index, region in enumerate(matched_regions, start=1):
+            rows = reader.read_range(sheet_info["sheet_name"], region.cell_range)
+            snapshot = RegionMarkdownBuilder.build_region_snapshot(
+                region_id=f"region_{index}",
+                region=region,
+                rows=rows,
+            )
+            markdown_parts.append(snapshot.markdown)
+        return "\n".join(part for part in markdown_parts if part)
+    finally:
+        reader.close()
 
 
 def _find_regions_intersecting_range(

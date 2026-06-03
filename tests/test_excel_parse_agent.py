@@ -173,7 +173,7 @@ def test_get_table_md_by_cell_accepts_row_col_tuple_and_empty_cell(tmp_path):
     assert empty_table_md == ""
 
 
-def test_get_table_md_by_bbox_returns_intersecting_region_markdown(tmp_path):
+def test_get_table_md_by_bbox_returns_exact_range_markdown(tmp_path):
     path = tmp_path / "bbox_table_md.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -188,12 +188,12 @@ def test_get_table_md_by_bbox_returns_intersecting_region_markdown(tmp_path):
     ws["B6"] = 3
     wb.save(path)
 
-    table_md = get_table_md_by_bbox(str(path), sheet_number=1, bbox=[1, 5, 2, 6])
+    table_md = get_table_md_by_bbox(str(path), sheet_number=1, bbox=[1, 5, 1, 6])
 
-    assert table_md == "| Item | Qty |\n| Storage | 3 |"
+    assert table_md == "- Item\n- Storage"
 
 
-def test_get_table_md_by_bbox_combines_multiple_intersecting_regions(tmp_path):
+def test_get_table_md_by_bbox_preserves_requested_cross_table_range(tmp_path):
     path = tmp_path / "bbox_multi_region.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -212,10 +212,8 @@ def test_get_table_md_by_bbox_combines_multiple_intersecting_regions(tmp_path):
 
     assert table_md == "\n".join(
         [
-            "| Invoice | Amount |",
-            "| INV-001 | 120 |",
-            "| Item | Qty |",
-            "| Storage | 3 |",
+            "| Invoice | Amount |  |  | Item | Qty |",
+            "| INV-001 | 120 |  |  | Storage | 3 |",
         ]
     )
 
